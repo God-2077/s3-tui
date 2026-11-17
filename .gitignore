@@ -6,3 +6,4 @@ downloads/
 *.log
 presigned-url*.txt
 .DS_Store
+temp
