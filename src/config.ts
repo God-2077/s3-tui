@@ -6,7 +6,7 @@ import { normalizeAccelerateHost } from "./utils/url.js";
 
 const MIB = 1024 * 1024;
 
-export type AccelerateMode = "endpoint" | "rewrite";
+export type AccelerateMode = "endpoint" | "rewrite" | "public";
 
 export interface AppConfig {
   bucket: string;
@@ -77,7 +77,7 @@ export const CONFIG_FIELDS: ConfigFieldHelp[] = [
     name: "S3_ACCELERATE_MODE",
     required: false,
     defaultValue: "endpoint",
-    description: "endpoint=用加速域重新签名；rewrite=主端点签名后替换 host",
+    description: "endpoint=用加速域重新签名；rewrite=主端点签名后替换 host；public=只生成无签名公开直链，传输仍走主端点",
   },
   {
     name: "S3_ACCELERATE_PATH_STYLE",
@@ -202,10 +202,16 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   const accelerateModeRaw = (read("S3_ACCELERATE_MODE") ?? "endpoint").toLowerCase();
   let accelerateMode: AccelerateMode = "endpoint";
-  if (accelerateModeRaw === "endpoint" || accelerateModeRaw === "rewrite") {
+  if (
+    accelerateModeRaw === "endpoint" ||
+    accelerateModeRaw === "rewrite" ||
+    accelerateModeRaw === "public"
+  ) {
     accelerateMode = accelerateModeRaw;
   } else {
-    problems.push(`S3_ACCELERATE_MODE 只能是 endpoint 或 rewrite，当前值：${accelerateModeRaw}`);
+    problems.push(
+      `S3_ACCELERATE_MODE 只能是 endpoint、rewrite 或 public，当前值：${accelerateModeRaw}`,
+    );
   }
 
   const acceleratePathStyle = parseBool("S3_ACCELERATE_PATH_STYLE", false);

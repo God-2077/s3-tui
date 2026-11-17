@@ -8,6 +8,8 @@ export interface PresignViewProps {
   entry: S3Entry;
   expires: number;
   method: "get" | "put";
+  /** 当前 URL 是公开桶直链（无签名）。 */
+  publicLink?: boolean;
   url?: string;
   loading: boolean;
   error?: string;
@@ -38,6 +40,7 @@ export function PresignView({
   entry,
   expires,
   method,
+  publicLink,
   url,
   loading,
   error,
@@ -76,7 +79,7 @@ export function PresignView({
   return (
     <Box flexDirection="column" paddingX={1} paddingY={1} borderStyle="round" borderColor="cyan">
       <Text bold color="cyan">
-        预签名 URL · {entry.name}
+        {publicLink ? "公开链接 URL" : "预签名 URL"} · {entry.name}
       </Text>
       <Text dimColor>
         {formatBytes(entry.size)} · {entry.key}
@@ -100,6 +103,14 @@ export function PresignView({
         <Text color="yellow">{method === "get" ? "GET" : "PUT"}</Text>
         <Text dimColor>（m 切换，PUT 用于直传）</Text>
       </Box>
+
+      {publicLink ? (
+        <Box marginTop={1}>
+          <Text dimColor>
+            公开直链：桶需开启公开访问，无签名、无有效期（PUT 仍为主端点签名 URL）
+          </Text>
+        </Box>
+      ) : null}
 
       <Box marginTop={1} flexDirection="column">
         {loading ? (

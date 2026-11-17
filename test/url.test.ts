@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { hostOf, normalizeAccelerateHost, replaceUrlHost } from "../src/utils/url.js";
+import {
+  hostOf,
+  normalizeAccelerateHost,
+  publicObjectUrl,
+  replaceUrlHost,
+} from "../src/utils/url.js";
 
 test("normalizeAccelerateHost 自动补 https", () => {
   assert.equal(normalizeAccelerateHost("cdn.example.com"), "https://cdn.example.com");
@@ -27,4 +32,19 @@ test("replaceUrlHost 只替换 host，保留 path/query/签名", () => {
 test("replaceUrlHost 保留端口", () => {
   const rewritten = replaceUrlHost("https://a.com/x?y=1", "cdn.example.com:8443");
   assert.equal(hostOf(rewritten), "cdn.example.com:8443");
+});
+
+test("publicObjectUrl 逐段编码生成公开直链", () => {
+  assert.equal(
+    publicObjectUrl("https://cdn.example.com", "photos/a b.jpg"),
+    "https://cdn.example.com/photos/a%20b.jpg",
+  );
+  assert.equal(
+    publicObjectUrl("https://cdn.example.com/", "中文/文件 (1).png"),
+    "https://cdn.example.com/%E4%B8%AD%E6%96%87/%E6%96%87%E4%BB%B6%20(1).png",
+  );
+  assert.equal(
+    publicObjectUrl("https://cdn.example.com:8443", "a.txt"),
+    "https://cdn.example.com:8443/a.txt",
+  );
 });

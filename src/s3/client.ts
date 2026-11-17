@@ -8,6 +8,8 @@ export interface S3Context {
   transfer: S3Client;
   /** rewrite 模式下需要替换预签名 URL 的 host。 */
   rewriteHost?: string;
+  /** public 模式下拼接公开直链用的 origin（https://host）。 */
+  publicHost?: string;
   bucket: string;
 }
 
@@ -56,6 +58,17 @@ export function createS3(config: AppConfig): S3Context {
           }),
         });
     return { main, transfer, bucket: config.bucket };
+  }
+
+  if (config.accelerateMode === "public") {
+    // public 模式：传输永远走主端点（签名操作），只额外提供公开直链的 host。
+    // S3_ACCELERATE_PATH_STYLE 在本模式被忽略：公开桶恒为「域根=桶根」形态。
+    return {
+      main,
+      transfer: main,
+      publicHost: config.accelerateHost,
+      bucket: config.bucket,
+    };
   }
 
   return {

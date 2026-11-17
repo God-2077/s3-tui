@@ -21,7 +21,7 @@ import { describeError, errorMessage } from "../utils/error.js";
 import { expandHome, joinKey, parentPrefix } from "../utils/key.js";
 import type { Logger } from "../utils/log.js";
 import { guessContentType } from "../utils/mime.js";
-import { replaceUrlHost } from "../utils/url.js";
+import { publicObjectUrl, replaceUrlHost } from "../utils/url.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { ErrorPanel } from "./ErrorPanel.js";
 import { FileList } from "./FileList.js";
@@ -50,6 +50,7 @@ interface PresignState {
   entry: S3Entry;
   expires: number;
   method: "get" | "put";
+  publicLink?: boolean;
   url?: string;
   loading: boolean;
   error?: string;
@@ -246,6 +247,8 @@ export function App({
           Math.min(config.presignExpires, 3600),
         );
         url = replaceUrlHost(signed, s3.rewriteHost);
+      } else if (s3.publicHost) {
+        url = publicObjectUrl(s3.publicHost, entry.key);
       }
       await downloadObject({
         ...(url ? { url } : { client: s3.transfer }),
@@ -413,15 +416,17 @@ export function App({
           : current,
       );
       try {
-        const raw =
-          method === "get"
+        const isPublicLink = Boolean(s3.publicHost) && method === "get";
+        const raw = isPublicLink
+          ? publicObjectUrl(s3.publicHost!, entry.key)
+          : method === "get"
             ? await presignGet(s3.transfer, config.bucket, entry.key, expires)
             : await presignPut(s3.transfer, config.bucket, entry.key, expires);
         if (seq !== presignSeqRef.current) return;
         const url = s3.rewriteHost ? replaceUrlHost(raw, s3.rewriteHost) : raw;
         setPresign((current) =>
           current && current.entry.key === entry.key
-            ? { ...current, url, loading: false, error: undefined, expires, method }
+            ? { ...current, url, loading: false, error: undefined, expires, method, publicLink: isPublicLink }
             : current,
         );
       } catch (error) {
@@ -436,7 +441,13 @@ export function App({
   );
 
   const openPresign = (entry: S3Entry): void => {
-    setPresign({ entry, expires: config.presignExpires, method: "get", loading: true });
+    setPresign({
+      entry,
+      expires: config.presignExpires,
+      method: "get",
+      publicLink: Boolean(s3.publicHost),
+      loading: true,
+    });
     void generatePresign(entry, config.presignExpires, "get");
   };
 
@@ -639,6 +650,7 @@ export function App({
         entry={presign.entry}
         expires={presign.expires}
         method={presign.method}
+        {...(presign.publicLink ? { publicLink: true } : {})}
         {...(presign.url ? { url: presign.url } : {})}
         loading={presign.loading}
         {...(presign.error ? { error: presign.error } : {})}
@@ -684,7 +696,7 @@ export function App({
   }
 
   const accelerateLabel = config.accelerateHost
-    ? ` · ⚡${config.accelerateHost.replace(/^https?:\/\//, "")}`
+    ? ` · ⚡${config.accelerateHost.replace(/^https?:\/\//, "")}${s3.publicHost ? "（公开）" : ""}`
     : "";
 
   return (

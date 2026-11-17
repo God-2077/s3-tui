@@ -35,3 +35,10 @@ export function replaceUrlHost(url: string, host: string): string {
 export function hostOf(url: string): string {
   return new URL(url).host;
 }
+
+/** 公开桶直链：https://<加速域>/<key>，逐段编码，无签名。 */
+export function publicObjectUrl(hostOrigin: string, key: string): string {
+  const base = hostOrigin.replace(/\/+$/, "");
+  const segments = key.split("/").map((segment) => encodeURIComponent(segment));
+  return `${base}/${segments.join("/")}`;
+}

@@ -12,7 +12,7 @@
 - 删除单个对象或递归删除目录，删除前确认
 - 生成 GET / PUT 预签名 URL，支持 15 分钟到 7 天有效期
 - 上传/下载可随时取消，分片上传失败会自动清理未完成的上传
-- 支持自定义加速主机（重新签名或 CDN 替换 host 两种模式）
+- 支持自定义加速主机（重新签名、CDN 替换 host 或公开直链三种模式）
 
 ## 快速开始
 
@@ -138,7 +138,7 @@ AWS S3 的 accelerate 端点必须把桶名写进 host，例如上面的写法�
 S3_ACCELERATE_PATH_STYLE=true
 ```
 
-Cloudflare R2 的自定义域通常只用于公开访问，不一定支持 S3 API 操作；需要签名访问时优先使用 R2 的 S3 端点，或改用下面的 rewrite 模式。
+Cloudflare R2 的自定义域通常只用于公开访问，不一定支持 S3 API 操作；需要签名访问时优先使用 R2 的 S3 端点，或改用下面的 rewrite 模式；只做公开直链时见 public 模式。
 
 ### rewrite 模式
 
@@ -150,6 +150,22 @@ S3_ACCELERATE_HOST=https://cdn.example.com
 ```
 
 注意：CDN 必须放行带签名的请求（例如公开桶，或源站不校验查询签名）。这种模式下上传仍走主端点，只有下载和预签名 URL 使用加速域名。
+
+### public 模式（公开桶直链）
+
+加速域名绑定的是一个已开启公开访问的桶，文件在域根路径下直接可读。程序不签名，直接拼接公开直链 `https://加速域/key`；按 `p` 时显示、复制和保存的都是这种干净链接，适合对外分享。
+
+```dotenv
+S3_ACCELERATE_MODE=public
+S3_ACCELERATE_HOST=https://k-pan.edgeone.ksable.top
+```
+
+注意：
+
+- 桶必须开启公开访问，否则直链会 403/404。Cloudflare R2：桶 → Settings → Public access → Custom Domains → 连接域名并 Allow Public Access。
+- public 模式下上传、列表、删除仍走主端点（签名操作），只有展示与下载走加速域；下载会直接请求公开直链，相当于让 CDN 加速。
+- 直链没有签名、没有有效期；PUT 预签名仍回退到主端点签名 URL。
+- 公开桶 = 任何人可读，请勿存放敏感数据。
 
 ## 使用
 

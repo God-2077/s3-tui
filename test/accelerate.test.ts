@@ -9,6 +9,7 @@ import { presignGet } from "../src/s3/presign.js";
 import { uploadFile } from "../src/s3/upload.js";
 import { downloadObject } from "../src/s3/download.js";
 import { CancelToken } from "../src/utils/cancel.js";
+import { publicObjectUrl } from "../src/utils/url.js";
 import { BUCKET, MIB, startMockS3 } from "./mockS3.js";
 
 function configFor(endpoint: string, extra: Record<string, string> = {}) {
@@ -121,5 +122,23 @@ test("加速主机 endpoint 模式：上传/分片/下载实际走加速 host", 
     closeS3(s3);
     server.close();
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("加速主机 public 模式：transfer 走主端点并生成无签名公开直链", () => {
+  const config = configFor("https://example.r2.cloudflarestorage.com", {
+    S3_ACCELERATE_HOST: "k-pan.edgeone.ksable.top",
+    S3_ACCELERATE_MODE: "public",
+  });
+  const s3 = createS3(config);
+  try {
+    assert.equal(s3.transfer, s3.main);
+    assert.equal(s3.rewriteHost, undefined);
+    assert.equal(s3.publicHost, "https://k-pan.edgeone.ksable.top");
+    const url = publicObjectUrl(s3.publicHost!, "1777537239253.png");
+    assert.equal(url, "https://k-pan.edgeone.ksable.top/1777537239253.png");
+    assert.ok(!url.includes("X-Amz-"));
+  } finally {
+    closeS3(s3);
   }
 });
