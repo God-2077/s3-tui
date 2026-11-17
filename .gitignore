@@ -1,0 +1,8 @@
+node_modules/
+dist/
+build/
+.env
+downloads/
+*.log
+presigned-url*.txt
+.DS_Store

@@ -1,0 +1,46 @@
+import { extname } from "node:path";
+
+const MIME_TYPES: Record<string, string> = {
+  ".avif": "image/avif",
+  ".bmp": "image/bmp",
+  ".css": "text/css; charset=utf-8",
+  ".csv": "text/csv; charset=utf-8",
+  ".gif": "image/gif",
+  ".gz": "application/gzip",
+  ".html": "text/html; charset=utf-8",
+  ".ico": "image/x-icon",
+  ".jpeg": "image/jpeg",
+  ".jpg": "image/jpeg",
+  ".js": "text/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".m4a": "audio/mp4",
+  ".md": "text/markdown; charset=utf-8",
+  ".mkv": "video/x-matroska",
+  ".mov": "video/quicktime",
+  ".mp3": "audio/mpeg",
+  ".mp4": "video/mp4",
+  ".ogg": "audio/ogg",
+  ".otf": "font/otf",
+  ".pdf": "application/pdf",
+  ".png": "image/png",
+  ".srt": "application/x-subrip",
+  ".svg": "image/svg+xml",
+  ".tar": "application/x-tar",
+  ".toml": "application/toml; charset=utf-8",
+  ".ttf": "font/ttf",
+  ".txt": "text/plain; charset=utf-8",
+  ".wasm": "application/wasm",
+  ".wav": "audio/wav",
+  ".webm": "video/webm",
+  ".webp": "image/webp",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".xml": "application/xml; charset=utf-8",
+  ".yaml": "application/yaml; charset=utf-8",
+  ".yml": "application/yaml; charset=utf-8",
+  ".zip": "application/zip",
+};
+
+export function guessContentType(filePath: string): string {
+  return MIME_TYPES[extname(filePath).toLowerCase()] ?? "application/octet-stream";
+}
