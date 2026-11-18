@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { Box, Text, useInput } from "ink";
 
+import { layoutInputLine, nextCursor, previousCursor } from "../utils/input.js";
+
 export interface PromptProps {
   label: string;
   hint?: string;
@@ -56,11 +58,11 @@ export function Prompt({
     }
 
     if (key.leftArrow) {
-      setCursor((current) => Math.max(0, current - 1));
+      setCursor((current) => previousCursor(value, current));
       return;
     }
     if (key.rightArrow) {
-      setCursor((current) => Math.min(value.length, current + 1));
+      setCursor((current) => nextCursor(value, current));
       return;
     }
     if (key.home || (key.ctrl && input === "a")) {
@@ -72,15 +74,17 @@ export function Prompt({
       return;
     }
     if (key.backspace) {
-      if (cursor === 0) return;
-      setValue((current) => current.slice(0, cursor - 1) + current.slice(cursor));
-      setCursor((current) => Math.max(0, current - 1));
+      const from = previousCursor(value, cursor);
+      if (from === cursor) return;
+      setValue(value.slice(0, from) + value.slice(cursor));
+      setCursor(from);
       setError(undefined);
       return;
     }
     if (key.delete) {
-      if (cursor >= value.length) return;
-      setValue((current) => current.slice(0, cursor) + current.slice(cursor + 1));
+      const to = nextCursor(value, cursor);
+      if (to === cursor) return;
+      setValue(value.slice(0, cursor) + value.slice(to));
       setError(undefined);
       return;
     }
@@ -106,10 +110,7 @@ export function Prompt({
   });
 
   const width = Math.max(16, columns - 6);
-  let shown = value;
-  if (value.length > width) {
-    shown = `…${value.slice(value.length - width + 1)}`;
-  }
+  const view = layoutInputLine(value, cursor, width);
   const hintLine = hint ?? "Enter 确认 · Esc 取消";
 
   return (
@@ -119,7 +120,9 @@ export function Prompt({
       </Text>
       <Box marginTop={1}>
         <Text color="green">{"> "}</Text>
-        <Text>{shown || " "}</Text>
+        <Text>{view.before}</Text>
+        <Text inverse>{view.at || " "}</Text>
+        <Text>{view.after}</Text>
       </Box>
       {error ? <Text color="red">{error}</Text> : null}
       <Text dimColor>{hintLine}</Text>
