@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useWindowSize } from "ink";
 import { existsSync, statSync } from "node:fs";
-import { readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { AppConfig } from "../config.js";
@@ -12,13 +12,23 @@ import {
   downloadObject,
   uniqueDestination,
 } from "../s3/download.js";
-import { listPage, type S3Entry } from "../s3/list.js";
+import { listAllKeys, listAllObjects, listPage, type S3Entry } from "../s3/list.js";
+import { createFolder, moveObjects, objectExists } from "../s3/manage.js";
 import { presignGet, presignPut } from "../s3/presign.js";
 import { uploadFile } from "../s3/upload.js";
 import { useTransfers, type TransferRequest } from "../hooks/useTransfers.js";
 import { copyToClipboard } from "../utils/clipboard.js";
 import { describeError, errorMessage } from "../utils/error.js";
-import { expandHome, joinKey, parentPrefix } from "../utils/key.js";
+import {
+  expandHome,
+  folderKey,
+  joinKey,
+  moveTargetKey,
+  parentPrefix,
+  prefixRelativePath,
+  resolveMoveTarget,
+  stripSlashes,
+} from "../utils/key.js";
 import type { Logger } from "../utils/log.js";
 import { guessContentType } from "../utils/mime.js";
 import { publicObjectUrl, replaceUrlHost } from "../utils/url.js";
@@ -32,7 +42,7 @@ import { Spinner } from "./Spinner.js";
 import { TransferPanel } from "./TransferPanel.js";
 
 interface PromptState {
-  kind: "upload" | "download" | "filter";
+  kind: "upload" | "download" | "download-dir" | "rename" | "new-folder" | "filter";
   label: string;
   hint?: string;
   initial: string;
@@ -121,6 +131,7 @@ export function App({
   const seqRef = useRef(0);
   const presignSeqRef = useRef(0);
   const busyRef = useRef(false);
+  const enumeratingRef = useRef(false);
   const pendingQuitRef = useRef(false);
 
   const transfers = useTransfers({
@@ -261,7 +272,7 @@ export function App({
     },
   });
 
-  const enqueueDownloads = (files: S3Entry[], skippedDirs = 0): void => {
+  const enqueueDownloads = (files: S3Entry[]): void => {
     const reserved = new Set<string>();
     const requests = files.map((file) => {
       const target = uniqueDestination(defaultDestination(config.downloadDir, file.key), reserved);
@@ -269,10 +280,63 @@ export function App({
       return makeDownloadRequest(file, target);
     });
     transfers.enqueue(requests);
-    setNotice({
-      text: `已加入 ${requests.length} 个下载任务${skippedDirs > 0 ? `，跳过 ${skippedDirs} 个目录` : ""}`,
-      tone: "info",
-    });
+    setNotice({ text: `已加入 ${requests.length} 个下载任务`, tone: "info" });
+  };
+
+  const enqueueFolderDownloads = async (
+    folders: S3Entry[],
+    options: { root?: string; extraFiles?: S3Entry[] } = {},
+  ): Promise<void> => {
+    if (enumeratingRef.current) return;
+    enumeratingRef.current = true;
+    const reserved = new Set<string>();
+    const requests: TransferRequest[] = [];
+    let directories = 0;
+    try {
+      for (const [index, folder] of folders.entries()) {
+        setNotice({
+          text: `正在枚举目录 ${index + 1}/${folders.length}：${folder.name}`,
+          tone: "info",
+        });
+        const root =
+          options.root ??
+          uniqueDestination(defaultDestination(config.downloadDir, folder.key), reserved);
+        reserved.add(root);
+        const objects = await listAllObjects(s3.main, config.bucket, folder.key);
+        for (const object of objects) {
+          const relative = prefixRelativePath(folder.key, object.key);
+          if (object.key.endsWith("/")) {
+            await mkdir(relative ? join(root, relative) : root, { recursive: true });
+            directories += 1;
+            continue;
+          }
+          if (!relative) continue;
+          const target = uniqueDestination(join(root, relative), reserved);
+          reserved.add(target);
+          requests.push(makeDownloadRequest(object, target));
+        }
+      }
+      for (const file of options.extraFiles ?? []) {
+        const target = uniqueDestination(defaultDestination(config.downloadDir, file.key), reserved);
+        reserved.add(target);
+        requests.push(makeDownloadRequest(file, target));
+      }
+      if (requests.length === 0 && directories === 0) {
+        setNotice({ text: "目录里没有可下载的对象", tone: "error" });
+        return;
+      }
+      transfers.enqueue(requests);
+      const detail = directories > 0 ? `，并创建 ${directories} 个目录` : "";
+      setNotice({
+        text: `已加入 ${requests.length} 个下载任务${detail}`,
+        tone: "info",
+      });
+    } catch (error) {
+      logger?.("枚举目录失败", error);
+      setNotice({ text: `枚举目录失败：${errorMessage(error)}`, tone: "error" });
+    } finally {
+      enumeratingRef.current = false;
+    }
   };
 
   const handleUploadSubmit = async (value: string): Promise<void> => {
@@ -292,16 +356,20 @@ export function App({
           return;
         }
         const limited = files.slice(0, 2000);
+        const folderName = basename(target);
+        const keepRoot = !/[\\/]$/.test(value) && Boolean(folderName);
+        const remoteBase = keepRoot ? joinKey(prefix, folderName) : prefix;
         transfers.enqueue(
           limited.map((file) =>
-            makeUploadRequest(file.path, joinKey(prefix, file.relative), file.size),
+            makeUploadRequest(file.path, joinKey(remoteBase, file.relative), file.size),
           ),
         );
+        const kept = keepRoot ? `，保留目录 ${folderName}/` : "";
         setNotice({
           text:
             limited.length < files.length
-              ? `已加入 ${limited.length} 个文件（超过 2000 个已截断）`
-              : `已加入 ${limited.length} 个文件到上传队列`,
+              ? `已加入 ${limited.length} 个文件（超过 2000 个已截断${kept}）`
+              : `已加入 ${limited.length} 个文件到上传队列${kept}`,
           tone: "info",
         });
         return;
@@ -324,29 +392,46 @@ export function App({
     setNotice({ text: `开始下载：${entry.name}`, tone: "info" });
   };
 
-  const startDownload = (targets: S3Entry[]): void => {
-    if (targets.length === 0) return;
-    const files = targets.filter((entry) => entry.kind === "file");
-    const skippedDirs = targets.length - files.length;
-    if (files.length === 0) {
-      setNotice({ text: "目录不能直接下载，请进入目录后选择文件", tone: "error" });
+  const handleDownloadDirSubmit = (value: string, entry: S3Entry): void => {
+    setPrompt(null);
+    const target = resolve(expandHome(value, homedir()));
+    if (existsSync(target) && !statSync(target).isDirectory()) {
+      setNotice({ text: "目标是文件，请输入目录路径", tone: "error" });
       return;
     }
-    if (files.length === 1) {
-      const file = files[0]!;
-      setPrompt({
-        kind: "download",
-        label: `下载 ${file.name} 到`,
-        hint: "Enter 开始下载 · Esc 取消",
-        initial: uniqueDestination(defaultDestination(config.downloadDir, file.key)),
-        entry: file,
-      });
-      if (skippedDirs > 0) {
-        setNotice({ text: `已跳过 ${skippedDirs} 个目录`, tone: "info" });
+    void enqueueFolderDownloads([entry], { root: target });
+  };
+
+  const startDownload = (targets: S3Entry[]): void => {
+    if (targets.length === 0) return;
+    if (targets.length === 1) {
+      const only = targets[0]!;
+      if (only.kind === "file") {
+        setPrompt({
+          kind: "download",
+          label: `下载 ${only.name} 到`,
+          hint: "Enter 开始下载 · Esc 取消",
+          initial: uniqueDestination(defaultDestination(config.downloadDir, only.key)),
+          entry: only,
+        });
+      } else {
+        setPrompt({
+          kind: "download-dir",
+          label: `下载目录 ${only.name} 到`,
+          hint: "会保留目录结构，文件夹内对象逐个下载 · Enter 开始 · Esc 取消",
+          initial: uniqueDestination(defaultDestination(config.downloadDir, only.key)),
+          entry: only,
+        });
       }
       return;
     }
-    enqueueDownloads(files, skippedDirs);
+    const files = targets.filter((entry) => entry.kind === "file");
+    const dirs = targets.filter((entry) => entry.kind === "dir");
+    if (dirs.length > 0) {
+      void enqueueFolderDownloads(dirs, { extraFiles: files });
+      return;
+    }
+    enqueueDownloads(files);
   };
 
   const performDelete = async (targets: S3Entry[]): Promise<void> => {
@@ -405,6 +490,153 @@ export function App({
         void performDelete(targets);
       },
     });
+  };
+
+  const requestNewFolder = (): void => {
+    setPrompt({
+      kind: "new-folder",
+      label: `在 ${prefix || "根目录"} 下新建文件夹`,
+      hint: "支持多级，例如 2024/照片 · Enter 创建 · Esc 取消",
+      initial: "",
+    });
+  };
+
+  const openRename = (entry: S3Entry): void => {
+    setPrompt({
+      kind: "rename",
+      label:
+        entry.kind === "dir"
+          ? `重命名/移动目录 ${entry.name}`
+          : `重命名/移动文件 ${entry.name}`,
+      hint: "输入完整的对象 key，可跨目录移动 · Enter 确认 · Esc 取消",
+      initial: entry.kind === "dir" ? stripSlashes(entry.key) : entry.key,
+      entry,
+    });
+  };
+
+  const performMove = async (
+    entry: S3Entry,
+    target: string,
+    knownKeys?: string[],
+  ): Promise<void> => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setNotice({ text: `正在移动 ${entry.name}…`, tone: "info" });
+    try {
+      let sources = knownKeys;
+      if (entry.kind === "dir" && !sources) {
+        sources = await listAllKeys(s3.main, config.bucket, entry.key);
+      }
+      const pairs =
+        entry.kind === "file"
+          ? [{ source: entry.key, target }]
+          : (sources ?? []).map((source) => ({
+              source,
+              target: moveTargetKey(entry.key, target, source),
+            }));
+      if (pairs.length === 0) {
+        setNotice({ text: "目录里没有对象，无法移动", tone: "error" });
+        return;
+      }
+      const result = await moveObjects(s3.main, config.bucket, pairs, {
+        concurrency: config.concurrency,
+        onProgress: (done, total) =>
+          setNotice({ text: `正在移动 ${done}/${total} 个对象…`, tone: "info" }),
+      });
+      setSelected(new Set());
+      setRefreshKey((current) => current + 1);
+      if (result.failures.length > 0) {
+        setNotice({
+          text: `移动完成 ${result.moved} 个，失败 ${result.failures.length} 个：${result.failures[0]!.message}`,
+          tone: "error",
+        });
+      } else {
+        setNotice({ text: `已移动 ${result.moved} 个对象到 ${target}`, tone: "success" });
+      }
+    } catch (error) {
+      logger?.(`移动失败 ${entry.key}`, error);
+      setNotice({ text: `移动失败：${errorMessage(error)}`, tone: "error" });
+    } finally {
+      busyRef.current = false;
+    }
+  };
+
+  const requestRename = async (entry: S3Entry, input: string): Promise<void> => {
+    const resolution = resolveMoveTarget(entry, input);
+    if ("error" in resolution) {
+      setNotice({ text: resolution.error, tone: "error" });
+      return;
+    }
+    const target = resolution.target;
+    if (busyRef.current) return;
+    busyRef.current = true;
+    let moveNow = false;
+    try {
+      if (entry.kind === "file") {
+        moveNow = !(await objectExists(s3.main, config.bucket, target));
+        if (!moveNow) {
+          setConfirm({
+            title: "确认覆盖文件",
+            danger: true,
+            lines: [
+              `目标已存在：${target}`,
+              "复制成功后会用源对象覆盖同名对象，并删除源对象。",
+            ],
+            action: () => {
+              setConfirm(null);
+              void performMove(entry, target);
+            },
+          });
+        }
+      } else {
+        setNotice({ text: `正在统计目录 ${entry.name} 中的对象…`, tone: "info" });
+        const keys = await listAllKeys(s3.main, config.bucket, entry.key);
+        if (keys.length === 0) {
+          setNotice({ text: "目录里没有对象，无法移动", tone: "error" });
+          return;
+        }
+        setConfirm({
+          title: "确认移动目录",
+          lines: [
+            `源目录：${entry.key}`,
+            `新目录：${target}`,
+            `对象数量：${keys.length}`,
+            "目标目录中的同名对象会被覆盖；先复制到新位置，成功后再删除原对象。",
+          ],
+          action: () => {
+            setConfirm(null);
+            void performMove(entry, target, keys);
+          },
+        });
+      }
+    } catch (error) {
+      logger?.(`检查移动目标失败 ${target}`, error);
+      setNotice({ text: `检查移动目标失败：${errorMessage(error)}`, tone: "error" });
+    } finally {
+      busyRef.current = false;
+    }
+    if (moveNow) void performMove(entry, target);
+  };
+
+  const handleNewFolderSubmit = async (value: string): Promise<void> => {
+    const key = folderKey(prefix, value);
+    if (!key) {
+      setNotice({ text: "文件夹名不能为空", tone: "error" });
+      return;
+    }
+    if (busyRef.current) return;
+    busyRef.current = true;
+    try {
+      await createFolder(s3.main, config.bucket, key);
+      setSelected(new Set());
+      setRefreshKey((current) => current + 1);
+      setNotice({ text: `已创建文件夹 ${key}`, tone: "success" });
+    } catch (error) {
+      logger?.(`创建文件夹失败 ${key}`, error);
+      setNotice({ text: `创建文件夹失败：${errorMessage(error)}`, tone: "error" });
+    } finally {
+      busyRef.current = false;
+    }
   };
 
   const generatePresign = useCallback(
@@ -558,11 +790,16 @@ export function App({
       setPrompt({
         kind: "upload",
         label: "上传本地路径（文件或目录）",
-        hint: "支持 ~/ 与相对路径，目录会递归上传 · Enter 确认 · Esc 取消",
+        hint: "目录末尾带 / 时只上传内容 · Enter 确认 · Esc 取消",
         initial: "",
       });
     } else if (input === "d") {
       startDownload(getTargets());
+    } else if (input === "m") {
+      if (current) openRename(current);
+      else setNotice({ text: "没有可重命名的对象", tone: "error" });
+    } else if (input === "n") {
+      requestNewFolder();
     } else if (input === "x" || key.delete) {
       requestDelete(getTargets());
     } else if (input === "p") {
@@ -592,6 +829,7 @@ export function App({
 
   const noticeColor =
     notice?.tone === "error" ? "red" : notice?.tone === "success" ? "green" : "cyan";
+  const promptEntry = prompt?.entry;
 
   let body: React.ReactNode;
   if (helpOpen) {
@@ -617,13 +855,36 @@ export function App({
                     ? "目标是目录，请输入完整的文件路径"
                     : undefined;
                 }
-              : undefined
+              : prompt.kind === "download-dir"
+                ? (value) => {
+                    const target = resolve(expandHome(value, homedir()));
+                    return existsSync(target) && !statSync(target).isDirectory()
+                      ? "目标是文件，请输入目录路径"
+                      : undefined;
+                  }
+                : prompt.kind === "new-folder"
+                  ? (value) => (folderKey(prefix, value) ? undefined : "文件夹名不能为空")
+                  : prompt.kind === "rename" && promptEntry
+                    ? (value) => {
+                        const resolution = resolveMoveTarget(promptEntry, value);
+                        return "error" in resolution ? resolution.error : undefined;
+                      }
+                    : undefined
         }
         onSubmit={(value) => {
           if (prompt.kind === "upload") void handleUploadSubmit(value);
-          else if (prompt.kind === "download" && prompt.entry)
-            handleDownloadSubmit(value, prompt.entry);
-          else if (prompt.kind === "filter") {
+          else if (prompt.kind === "download" && promptEntry)
+            handleDownloadSubmit(value, promptEntry);
+          else if (prompt.kind === "download-dir" && promptEntry)
+            handleDownloadDirSubmit(value, promptEntry);
+          else if (prompt.kind === "rename" && promptEntry) {
+            const entry = promptEntry;
+            setPrompt(null);
+            void requestRename(entry, value);
+          } else if (prompt.kind === "new-folder") {
+            setPrompt(null);
+            void handleNewFolderSubmit(value);
+          } else if (prompt.kind === "filter") {
             setFilter(value);
             setPrompt(null);
           }
@@ -661,7 +922,8 @@ export function App({
         }}
         onToggleMethod={() => {
           const method = presign.method === "get" ? "put" : "get";
-          setPresign((current) => (current ? { ...current, method } : current));
+          const publicLink = Boolean(s3.publicHost) && method === "get";
+          setPresign((current) => (current ? { ...current, method, publicLink } : current));
           void generatePresign(presign.entry, presign.expires, method);
         }}
         onRegenerate={() => void generatePresign(presign.entry, presign.expires, presign.method)}
@@ -743,13 +1005,13 @@ export function App({
               ? `已选 ${selected.size} 项 · 空格取消选择 · a 全选 · x 删除`
               : hasActive
                 ? "Ctrl-C 取消传输 · ? 帮助"
-                : "↑↓ 移动 · Enter 进入 · ⌫ 上级 · ? 帮助"}
+                : "↑↓ 移动 · Enter 进入 · ⌫ 上级 · m 重命名 · n 新建目录 · ? 帮助"}
           </Text>
         )}
       </Box>
       <Box paddingX={1}>
         <Text dimColor wrap="truncate-end">
-          u 上传 · d 下载 · x 删除 · p 预签名 · / 过滤 · r 刷新 · q 退出
+          u 上传 · d 下载 · m 重命名 · n 新建 · x 删除 · p 预签名 · / 过滤 · r 刷新 · q 退出
         </Text>
       </Box>
     </Box>

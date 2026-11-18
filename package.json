@@ -17,7 +17,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/cli.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test test/format.test.ts test/key.test.ts test/multipart.test.ts test/config.test.ts test/url.test.ts test/input.test.ts test/s3.integration.test.ts test/accelerate.test.ts"
+    "test": "node --import tsx --test test/format.test.ts test/key.test.ts test/manage.test.ts test/multipart.test.ts test/config.test.ts test/url.test.ts test/input.test.ts test/s3.integration.test.ts test/accelerate.test.ts"
   },
   "keywords": [
     "s3",

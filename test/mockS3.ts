@@ -49,7 +49,7 @@ async function readBody(request: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-/** 一个只用于测试的最小 S3 兼容服务：list / put / get / multipart / batch delete。 */
+/** 一个只用于测试的最小 S3 兼容服务：list / put / get / copy / head / multipart / batch delete。 */
 export async function startMockS3(options: { bucketless?: boolean } = {}): Promise<MockS3> {
   const objects = new Map<string, Buffer>();
   const uploads = new Map<string, PartState>();
@@ -60,7 +60,9 @@ export async function startMockS3(options: { bucketless?: boolean } = {}): Promi
       const url = new URL(request.url ?? "/", "http://localhost");
       const segments = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
       const bucket = options.bucketless ? BUCKET : segments[0];
-      const key = (options.bucketless ? segments : segments.slice(1)).join("/");
+      const keyParts = options.bucketless ? segments : segments.slice(1);
+      const joinedKey = keyParts.join("/");
+      const key = joinedKey && url.pathname.endsWith("/") ? `${joinedKey}/` : joinedKey;
       const query = url.searchParams;
       const method = request.method ?? "GET";
 
@@ -178,10 +180,52 @@ export async function startMockS3(options: { bucketless?: boolean } = {}): Promi
         return;
       }
 
-      if (method === "PUT" && key) {
+      if (method === "PUT" && key && !request.headers["x-amz-copy-source"]) {
         const body = await readBody(request);
         objects.set(key, body);
         send(response, 200, "", { etag: etagOf(body) });
+        return;
+      }
+
+      if (method === "PUT" && key && request.headers["x-amz-copy-source"]) {
+        await readBody(request);
+        const header = request.headers["x-amz-copy-source"];
+        const rawSource = Array.isArray(header) ? (header[0] ?? "") : (header ?? "");
+        const sourceParts = rawSource.split("/").map((part) => decodeURIComponent(part));
+        if (sourceParts[0] === "") sourceParts.shift();
+        const sourceBucket = sourceParts.shift() ?? "";
+        const sourceKey = sourceParts.join("/");
+        const source = sourceBucket === BUCKET ? objects.get(sourceKey) : undefined;
+        if (!source) {
+          send(response, 404, "<Error><Code>NoSuchKey</Code><Message>missing</Message></Error>");
+          return;
+        }
+        const copy = Buffer.from(source);
+        objects.set(key, copy);
+        send(
+          response,
+          200,
+          `<CopyObjectResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><LastModified>2026-01-02T03:04:05.000Z</LastModified><ETag>${etagOf(
+            copy,
+          )}</ETag></CopyObjectResult>`,
+        );
+        return;
+      }
+
+      if (method === "HEAD" && key) {
+        const body = objects.get(key);
+        if (!body) {
+          response.writeHead(404, { "content-length": "0" });
+          response.end();
+          return;
+        }
+        response.writeHead(200, {
+          "content-type": "application/octet-stream",
+          "content-length": String(body.length),
+          etag: etagOf(body),
+          "last-modified": "Fri, 02 Jan 2026 03:04:05 GMT",
+        });
+        response.end();
         return;
       }
 

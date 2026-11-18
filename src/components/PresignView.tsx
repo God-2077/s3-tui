@@ -51,6 +51,8 @@ export function PresignView({
   onCopy,
   onSave,
 }: PresignViewProps) {
+  const unsigned = Boolean(publicLink) && method === "get";
+
   useInput((input, key) => {
     if (key.escape || input === "q") {
       onClose();
@@ -72,6 +74,7 @@ export function PresignView({
       onRegenerate();
       return;
     }
+    if (unsigned) return;
     const preset = EXPIRY_PRESETS.find((item, index) => String(index + 1) === input);
     if (preset) onExpires(preset.seconds);
   });
@@ -79,24 +82,26 @@ export function PresignView({
   return (
     <Box flexDirection="column" paddingX={1} paddingY={1} borderStyle="round" borderColor="cyan">
       <Text bold color="cyan">
-        {publicLink ? "公开链接 URL" : "预签名 URL"} · {entry.name}
+        {unsigned ? "公开链接 URL" : "预签名 URL"} · {entry.name}
       </Text>
       <Text dimColor>
         {formatBytes(entry.size)} · {entry.key}
       </Text>
 
-      <Box marginTop={1}>
-        <Text dimColor>有效期：</Text>
-        {EXPIRY_PRESETS.map((preset, index) => (
-          <Text key={preset.seconds}>
-            <Text color={expires === preset.seconds ? "green" : "gray"}>
-              {expires === preset.seconds ? "●" : "○"} {preset.label}
+      {unsigned ? null : (
+        <Box marginTop={1}>
+          <Text dimColor>有效期：</Text>
+          {EXPIRY_PRESETS.map((preset, index) => (
+            <Text key={preset.seconds}>
+              <Text color={expires === preset.seconds ? "green" : "gray"}>
+                {expires === preset.seconds ? "●" : "○"} {preset.label}
+              </Text>
+              <Text dimColor>({index + 1}) </Text>
             </Text>
-            <Text dimColor>({index + 1}) </Text>
-          </Text>
-        ))}
-        <Text dimColor>当前 {expiresLabel(expires)}</Text>
-      </Box>
+          ))}
+          <Text dimColor>当前 {expiresLabel(expires)}</Text>
+        </Box>
+      )}
 
       <Box>
         <Text dimColor>方法：</Text>
@@ -104,10 +109,10 @@ export function PresignView({
         <Text dimColor>（m 切换，PUT 用于直传）</Text>
       </Box>
 
-      {publicLink ? (
+      {unsigned ? (
         <Box marginTop={1}>
           <Text dimColor>
-            公开直链：桶需开启公开访问，无签名、无有效期（PUT 仍为主端点签名 URL）
+            公开直链：桶需开启公开访问，无签名、无有效期；按 m 可切换为 PUT 签名 URL
           </Text>
         </Box>
       ) : null}
@@ -130,7 +135,12 @@ export function PresignView({
       <Box marginTop={1}>
         <Text dimColor>
           <Text color="green">c</Text> 复制 · <Text color="green">w</Text> 保存到
-          presigned-url.txt · <Text color="yellow">1-4</Text> 改有效期 ·{" "}
+          presigned-url.txt · <Text color="yellow">m</Text> 切换方法 ·{" "}
+          {unsigned ? null : (
+            <>
+              <Text color="yellow">1-4</Text> 改有效期 ·{" "}
+            </>
+          )}
           <Text color="yellow">r</Text> 重新生成 · Esc 关闭
         </Text>
       </Box>

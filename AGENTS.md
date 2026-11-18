@@ -15,7 +15,8 @@
 
 - Single-package ESM with NodeNext resolution: every relative import needs a `.js` suffix even from `.ts`/`.tsx` (e.g. `import { App } from "./components/App.js"`).
 - Entry `src/cli.tsx`: arg/TTY checks, `.env` load, config validation, then render. UI state and key handling all live in `src/components/App.tsx` (single large component); S3 work is isolated in `src/s3/`; the transfer queue is `src/hooks/useTransfers.ts` (files run one at a time, parts concurrent within a file).
-- `S3Context.main` vs `S3Context.transfer` (`src/s3/client.ts`): list/delete/metadata always use `main`; upload/download/presign use `transfer`. Accelerate modes `endpoint` / `rewrite` / `public` decide how the accelerate host is applied; `public` keeps `transfer === main` and only builds unsigned links.
+- `S3Context.main` vs `S3Context.transfer` (`src/s3/client.ts`): list/delete/metadata and object management (copy/HEAD/create-folder) always use `main`; upload/download/presign use `transfer`. Accelerate modes `endpoint` / `rewrite` / `public` decide how the accelerate host is applied; `public` keeps `transfer === main` and only builds unsigned links.
+- Folders are not real objects: list uses prefixes; new folders and empty-directory markers are zero-byte keys ending in `/`. Rename/move is CopyObject + delete of the source through `src/s3/manage.ts`; a directory move is not atomic and copies objects before batch-deleting the source.
 - Keep `requestChecksumCalculation` / `responseChecksumValidation: "WHEN_REQUIRED"` on the AWS SDK clients; removing them breaks MinIO/R2 compatibility.
 - Multipart invariants (`src/utils/parts.ts`): parts >= 5 MiB and <= 10,000 parts; failed or cancelled multipart uploads abort via `AbortMultipartUpload`.
 - Terminal layout must use the display-width helpers in `src/utils/format.ts` / `input.ts` (CJK and emoji occupy 2 columns), not `String.length`.
@@ -30,7 +31,7 @@
 
 ## Tests
 
-- `node:test` + `node:assert/strict`. `test/mockS3.ts` is a minimal local S3 HTTP server (list/put/get/multipart/batch delete) on an ephemeral port — no external S3 needed. `startMockS3({ bucketless: true })` simulates a bucket-bound accelerate host.
+- `node:test` + `node:assert/strict`. `test/mockS3.ts` is a minimal local S3 HTTP server (list/put/get/HEAD/copy/multipart/batch delete) on an ephemeral port — no external S3 needed. `startMockS3({ bucketless: true })` simulates a bucket-bound accelerate host.
 - Integration and accelerate tests use multi-MiB temp files and tmpdirs; clean up in `finally` (`client.destroy()`, `server.close()`, `rm(dir)`).
 - Use `parseConfig({ ... })` with explicit env objects in tests; never depend on the developer's `.env`.
 

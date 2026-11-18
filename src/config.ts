@@ -85,7 +85,7 @@ export const CONFIG_FIELDS: ConfigFieldHelp[] = [
     defaultValue: "false",
     description: "加速域是 host/bucket/key 形态时设为 true",
   },
-  { name: "S3_CONCURRENCY", required: false, defaultValue: "4", description: "分片/下载并发数（1-16）" },
+  { name: "S3_CONCURRENCY", required: false, defaultValue: "4", description: "分片上传/目录移动的并发数（1-16）" },
   {
     name: "S3_PART_SIZE_MB",
     required: false,
