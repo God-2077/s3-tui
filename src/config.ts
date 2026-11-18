@@ -21,6 +21,10 @@ export interface AppConfig {
   accelerateMode: AccelerateMode;
   acceleratePathStyle: boolean;
   concurrency: number;
+  uploadConcurrency: number;
+  downloadConcurrency: number;
+  downloadThreads: number;
+  downloadPartSize: number;
   partSize: number;
   multipartThreshold: number;
   downloadDir: string;
@@ -85,7 +89,11 @@ export const CONFIG_FIELDS: ConfigFieldHelp[] = [
     defaultValue: "false",
     description: "加速域是 host/bucket/key 形态时设为 true",
   },
-  { name: "S3_CONCURRENCY", required: false, defaultValue: "4", description: "分片上传/目录移动的并发数（1-16）" },
+  { name: "S3_CONCURRENCY", required: false, defaultValue: "4", description: "单个文件分片上传/目录移动的并发数（1-16）" },
+  { name: "S3_UPLOAD_CONCURRENCY", required: false, defaultValue: "2", description: "同时上传的文件数（1-16）" },
+  { name: "S3_DOWNLOAD_CONCURRENCY", required: false, defaultValue: "2", description: "同时下载的文件数（1-16）" },
+  { name: "S3_DOWNLOAD_THREADS", required: false, defaultValue: "4", description: "单个文件的分段下载线程数（1-16）" },
+  { name: "S3_DOWNLOAD_PART_SIZE_MB", required: false, defaultValue: "8", description: "下载分段大小（MiB，1-5120）" },
   {
     name: "S3_PART_SIZE_MB",
     required: false,
@@ -216,11 +224,16 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   const acceleratePathStyle = parseBool("S3_ACCELERATE_PATH_STYLE", false);
   const concurrency = parseIntInRange("S3_CONCURRENCY", 4, 1, 16);
+  const uploadConcurrency = parseIntInRange("S3_UPLOAD_CONCURRENCY", 2, 1, 16);
+  const downloadConcurrency = parseIntInRange("S3_DOWNLOAD_CONCURRENCY", 2, 1, 16);
+  const downloadThreads = parseIntInRange("S3_DOWNLOAD_THREADS", 4, 1, 16);
+  const downloadPartSizeMb = parseIntInRange("S3_DOWNLOAD_PART_SIZE_MB", 8, 1, 5120);
   const partSizeMb = parseIntInRange("S3_PART_SIZE_MB", 8, 5, 5120);
   const thresholdMb = parseIntInRange("S3_MULTIPART_THRESHOLD_MB", 8, 0, 5 * 1024 * 1024);
   const presignExpires = parseIntInRange("S3_PRESIGN_EXPIRES", 3600, 1, 7 * 24 * 3600);
 
   const partSize = partSizeMb * MIB;
+  const downloadPartSize = downloadPartSizeMb * MIB;
   const multipartThreshold = Math.max(thresholdMb * MIB, MIN_PART_SIZE);
 
   const downloadDirRaw = read("S3_DOWNLOAD_DIR") ?? "./downloads";
@@ -244,6 +257,10 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     accelerateMode,
     acceleratePathStyle,
     concurrency,
+    uploadConcurrency,
+    downloadConcurrency,
+    downloadThreads,
+    downloadPartSize,
     partSize,
     multipartThreshold,
     downloadDir,

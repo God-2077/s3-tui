@@ -39,6 +39,8 @@ export function TransferPanel({ tasks, columns }: TransferPanelProps) {
   const finished = tasks.filter(
     (task) => task.status === "done" || task.status === "error" || task.status === "cancelled",
   );
+  const runningCount = tasks.filter((task) => task.status === "running").length;
+  const queuedCount = tasks.filter((task) => task.status === "queued").length;
 
   const shown = [...running.slice(0, 4), ...finished.slice(-2)];
   const completed = tasks.filter((task) => task.status === "done").length;
@@ -48,7 +50,7 @@ export function TransferPanel({ tasks, columns }: TransferPanelProps) {
   return (
     <Box flexDirection="column" paddingX={1} borderStyle="single" borderColor="gray">
       <Text dimColor wrap="truncate-end">
-        传输中 {running.length} · 完成 {completed}
+        运行 {runningCount} · 排队 {queuedCount} · 完成 {completed}
         {failed > 0 ? ` · 失败 ${failed}` : ""}   <Text color="gray">c 清除已完成  Ctrl-C 取消</Text>
       </Text>
       {shown.map((task) => {
@@ -56,7 +58,10 @@ export function TransferPanel({ tasks, columns }: TransferPanelProps) {
         const percent = Math.round(task.percent);
         const speed = task.status === "running" ? formatSpeed(task.speed) : "";
         const eta = task.status === "running" ? formatEta(task.etaMs) : "";
-        const part = task.part ? ` 分片 ${task.part.current}/${task.part.total}` : "";
+        const partLabel = task.kind === "upload" ? "分片" : "分段";
+        const part = task.part
+          ? ` ${partLabel} ${task.part.current}/${task.part.total}`
+          : "";
         const label = padEndDisplay(task.label, labelWidth);
 
         return (
@@ -85,7 +90,7 @@ export function TransferPanel({ tasks, columns }: TransferPanelProps) {
         );
       })}
       {running.length > 4 ? (
-        <Text dimColor>… 还有 {running.length - 4} 个排队任务</Text>
+        <Text dimColor>… 还有 {running.length - 4} 个未完成任务</Text>
       ) : null}
     </Box>
   );

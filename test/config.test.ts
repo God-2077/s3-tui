@@ -15,6 +15,10 @@ test("最小配置可以解析，并应用默认值", () => {
   assert.equal(config.endpoint, undefined);
   assert.equal(config.forcePathStyle, false);
   assert.equal(config.concurrency, 4);
+  assert.equal(config.uploadConcurrency, 2);
+  assert.equal(config.downloadConcurrency, 2);
+  assert.equal(config.downloadThreads, 4);
+  assert.equal(config.downloadPartSize, 8 * 1024 * 1024);
   assert.equal(config.partSize, 8 * 1024 * 1024);
   assert.equal(config.multipartThreshold, 8 * 1024 * 1024);
   assert.equal(config.presignExpires, 3600);
@@ -83,6 +87,20 @@ test("分片阈值不会低于 5 MiB", () => {
   assert.equal(config.partSize, 5 * 1024 * 1024);
 });
 
+test("上传与下载并发参数支持显式配置", () => {
+  const config = parseConfig({
+    ...baseEnv,
+    S3_UPLOAD_CONCURRENCY: "1",
+    S3_DOWNLOAD_CONCURRENCY: "3",
+    S3_DOWNLOAD_THREADS: "6",
+    S3_DOWNLOAD_PART_SIZE_MB: "2",
+  });
+  assert.equal(config.uploadConcurrency, 1);
+  assert.equal(config.downloadConcurrency, 3);
+  assert.equal(config.downloadThreads, 6);
+  assert.equal(config.downloadPartSize, 2 * 1024 * 1024);
+});
+
 test("缺少必填项会一次报告所有问题", () => {
   assert.throws(
     () => parseConfig({}),
@@ -103,13 +121,17 @@ test("非法数值与加速模式会报错", () => {
       parseConfig({
         ...baseEnv,
         S3_CONCURRENCY: "99",
+        S3_UPLOAD_CONCURRENCY: "0",
+        S3_DOWNLOAD_CONCURRENCY: "17",
+        S3_DOWNLOAD_THREADS: "x",
+        S3_DOWNLOAD_PART_SIZE_MB: "0",
         S3_PRESIGN_EXPIRES: "9999999",
         S3_ACCELERATE_MODE: "fast",
         S3_ACCELERATE_HOST: "https://cdn.example.com/path",
       }),
     (error: unknown) => {
       assert.ok(error instanceof ConfigError);
-      assert.equal(error.problems.length, 4);
+      assert.equal(error.problems.length, 8);
       return true;
     },
   );

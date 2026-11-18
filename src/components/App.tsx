@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useWindowSize } from "ink";
 import { existsSync, statSync } from "node:fs";
-import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { AppConfig } from "../config.js";
@@ -10,6 +10,7 @@ import { deleteKeys, deletePrefix, type DeleteFailure } from "../s3/delete.js";
 import {
   defaultDestination,
   downloadObject,
+  reserveDestination,
   uniqueDestination,
 } from "../s3/download.js";
 import { listAllKeys, listAllObjects, listPage, type S3Entry } from "../s3/list.js";
@@ -29,6 +30,7 @@ import {
   resolveMoveTarget,
   stripSlashes,
 } from "../utils/key.js";
+import { collectFiles, MAX_UPLOAD_FILES, planPickerUploads } from "../utils/local.js";
 import type { Logger } from "../utils/log.js";
 import { guessContentType } from "../utils/mime.js";
 import { publicObjectUrl, replaceUrlHost } from "../utils/url.js";
@@ -36,6 +38,7 @@ import { ConfirmDialog } from "./ConfirmDialog.js";
 import { ErrorPanel } from "./ErrorPanel.js";
 import { FileList } from "./FileList.js";
 import { HelpView } from "./HelpView.js";
+import { LocalPicker } from "./LocalPicker.js";
 import { PresignView } from "./PresignView.js";
 import { Prompt } from "./Prompt.js";
 import { Spinner } from "./Spinner.js";
@@ -71,33 +74,6 @@ interface Notice {
   tone: "info" | "success" | "error";
 }
 
-interface LocalFile {
-  path: string;
-  relative: string;
-  size: number;
-}
-
-async function collectFiles(root: string): Promise<LocalFile[]> {
-  const files: LocalFile[] = [];
-  const walk = async (directory: string, relativeBase: string): Promise<void> => {
-    const children = await readdir(directory, { withFileTypes: true });
-    for (const child of children) {
-      if (child.isSymbolicLink()) continue;
-      const absolute = join(directory, child.name);
-      const relative = relativeBase ? `${relativeBase}/${child.name}` : child.name;
-      if (child.isDirectory()) {
-        await walk(absolute, relative);
-      } else if (child.isFile()) {
-        const info = await stat(absolute);
-        files.push({ path: absolute, relative, size: info.size });
-      }
-    }
-  };
-  await walk(root, "");
-  files.sort((a, b) => a.relative.localeCompare(b.relative));
-  return files;
-}
-
 export function App({
   config,
   s3,
@@ -126,6 +102,7 @@ export function App({
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const [presign, setPresign] = useState<PresignState | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
 
   const seqRef = useRef(0);
@@ -133,9 +110,13 @@ export function App({
   const busyRef = useRef(false);
   const enumeratingRef = useRef(false);
   const pendingQuitRef = useRef(false);
+  const downloadReservationsRef = useRef(new Set<string>());
 
   const transfers = useTransfers({
+    uploadConcurrency: config.uploadConcurrency,
+    downloadConcurrency: config.downloadConcurrency,
     onDrained: () => {
+      if (!enumeratingRef.current) downloadReservationsRef.current.clear();
       setRefreshKey((current) => current + 1);
       if (pendingQuitRef.current) {
         pendingQuitRef.current = false;
@@ -217,6 +198,16 @@ export function App({
 
   const refresh = useCallback(() => setRefreshKey((current) => current + 1), []);
 
+  const openUploadPrompt = useCallback(() => {
+    setPickerOpen(false);
+    setPrompt({
+      kind: "upload",
+      label: "上传本地路径（文件或目录）",
+      hint: "支持 ~/ 开头的路径；目录末尾带 / 时只上传内容 · Enter 确认 · Esc 取消",
+      initial: "",
+    });
+  }, []);
+
   const getTargets = useCallback((): S3Entry[] => {
     const selectedEntries = entries.filter((entry) => selected.has(entry.key));
     if (selectedEntries.length > 0) return selectedEntries;
@@ -268,17 +259,25 @@ export function App({
         destPath,
         token,
         onProgress,
+        totalSize: entry.size,
+        threads: config.downloadThreads,
+        chunkSize: config.downloadPartSize,
       });
     },
   });
 
+  const reserveDownloadPath = useCallback(
+    (target: string): string => reserveDestination(target, downloadReservationsRef.current),
+    [],
+  );
+
   const enqueueDownloads = (files: S3Entry[]): void => {
-    const reserved = new Set<string>();
-    const requests = files.map((file) => {
-      const target = uniqueDestination(defaultDestination(config.downloadDir, file.key), reserved);
-      reserved.add(target);
-      return makeDownloadRequest(file, target);
-    });
+    const requests = files.map((file) =>
+      makeDownloadRequest(
+        file,
+        reserveDownloadPath(defaultDestination(config.downloadDir, file.key)),
+      ),
+    );
     transfers.enqueue(requests);
     setNotice({ text: `已加入 ${requests.length} 个下载任务`, tone: "info" });
   };
@@ -289,8 +288,14 @@ export function App({
   ): Promise<void> => {
     if (enumeratingRef.current) return;
     enumeratingRef.current = true;
-    const reserved = new Set<string>();
     const requests: TransferRequest[] = [];
+    const reservedHere: string[] = [];
+    const reservePath = (target: string): string => {
+      const chosen = reserveDownloadPath(target);
+      reservedHere.push(chosen);
+      return chosen;
+    };
+    let committed = false;
     let directories = 0;
     try {
       for (const [index, folder] of folders.entries()) {
@@ -300,8 +305,7 @@ export function App({
         });
         const root =
           options.root ??
-          uniqueDestination(defaultDestination(config.downloadDir, folder.key), reserved);
-        reserved.add(root);
+          reservePath(defaultDestination(config.downloadDir, folder.key));
         const objects = await listAllObjects(s3.main, config.bucket, folder.key);
         for (const object of objects) {
           const relative = prefixRelativePath(folder.key, object.key);
@@ -311,14 +315,12 @@ export function App({
             continue;
           }
           if (!relative) continue;
-          const target = uniqueDestination(join(root, relative), reserved);
-          reserved.add(target);
+          const target = reservePath(join(root, relative));
           requests.push(makeDownloadRequest(object, target));
         }
       }
       for (const file of options.extraFiles ?? []) {
-        const target = uniqueDestination(defaultDestination(config.downloadDir, file.key), reserved);
-        reserved.add(target);
+        const target = reservePath(defaultDestination(config.downloadDir, file.key));
         requests.push(makeDownloadRequest(file, target));
       }
       if (requests.length === 0 && directories === 0) {
@@ -326,6 +328,7 @@ export function App({
         return;
       }
       transfers.enqueue(requests);
+      committed = true;
       const detail = directories > 0 ? `，并创建 ${directories} 个目录` : "";
       setNotice({
         text: `已加入 ${requests.length} 个下载任务${detail}`,
@@ -335,6 +338,10 @@ export function App({
       logger?.("枚举目录失败", error);
       setNotice({ text: `枚举目录失败：${errorMessage(error)}`, tone: "error" });
     } finally {
+      if (!committed) {
+        for (const path of reservedHere) downloadReservationsRef.current.delete(path);
+        if (!transfers.isBusy()) downloadReservationsRef.current.clear();
+      }
       enumeratingRef.current = false;
     }
   };
@@ -355,7 +362,7 @@ export function App({
           setNotice({ text: "目录里没有可上传的文件", tone: "error" });
           return;
         }
-        const limited = files.slice(0, 2000);
+        const limited = files.slice(0, MAX_UPLOAD_FILES);
         const folderName = basename(target);
         const keepRoot = !/[\\/]$/.test(value) && Boolean(folderName);
         const remoteBase = keepRoot ? joinKey(prefix, folderName) : prefix;
@@ -368,13 +375,42 @@ export function App({
         setNotice({
           text:
             limited.length < files.length
-              ? `已加入 ${limited.length} 个文件（超过 2000 个已截断${kept}）`
+              ? `已加入 ${limited.length} 个文件（超过 ${MAX_UPLOAD_FILES} 个已截断${kept}）`
               : `已加入 ${limited.length} 个文件到上传队列${kept}`,
           tone: "info",
         });
         return;
       }
       setNotice({ text: "只支持普通文件或目录", tone: "error" });
+    } catch (error) {
+      logger?.("读取本地路径失败", error);
+      setNotice({ text: `读取路径失败：${errorMessage(error)}`, tone: "error" });
+    }
+  };
+
+  const handlePickerUpload = async (paths: string[]): Promise<void> => {
+    setPickerOpen(false);
+    setNotice({ text: "正在读取本地文件…", tone: "info" });
+    try {
+      const plan = await planPickerUploads(paths, prefix);
+      if (plan.files.length === 0) {
+        setNotice({
+          text: plan.emptyDirs > 0 ? "所选目录里没有可上传的文件" : "没有可上传的文件",
+          tone: "error",
+        });
+        return;
+      }
+      transfers.enqueue(
+        plan.files.map((file) => makeUploadRequest(file.path, file.key, file.size)),
+      );
+      const details: string[] = [];
+      if (plan.emptyDirs > 0) details.push(`${plan.emptyDirs} 个空目录已跳过`);
+      if (plan.truncated) details.push(`超过 ${MAX_UPLOAD_FILES} 个已截断`);
+      const suffix = details.length > 0 ? `（${details.join("，")}）` : "";
+      setNotice({
+        text: `已加入 ${plan.files.length} 个文件到上传队列${suffix}`,
+        tone: "info",
+      });
     } catch (error) {
       logger?.("读取本地路径失败", error);
       setNotice({ text: `读取路径失败：${errorMessage(error)}`, tone: "error" });
@@ -388,7 +424,7 @@ export function App({
       setNotice({ text: "目标是目录，请输入完整的文件路径", tone: "error" });
       return;
     }
-    transfers.enqueue([makeDownloadRequest(entry, uniqueDestination(target))]);
+    transfers.enqueue([makeDownloadRequest(entry, reserveDownloadPath(target))]);
     setNotice({ text: `开始下载：${entry.name}`, tone: "info" });
   };
 
@@ -411,15 +447,21 @@ export function App({
           kind: "download",
           label: `下载 ${only.name} 到`,
           hint: "Enter 开始下载 · Esc 取消",
-          initial: uniqueDestination(defaultDestination(config.downloadDir, only.key)),
+          initial: uniqueDestination(
+            defaultDestination(config.downloadDir, only.key),
+            downloadReservationsRef.current,
+          ),
           entry: only,
         });
       } else {
         setPrompt({
           kind: "download-dir",
           label: `下载目录 ${only.name} 到`,
-          hint: "会保留目录结构，文件夹内对象逐个下载 · Enter 开始 · Esc 取消",
-          initial: uniqueDestination(defaultDestination(config.downloadDir, only.key)),
+          hint: "会保留目录结构，多个对象按下载并发数进行 · Enter 开始 · Esc 取消",
+          initial: uniqueDestination(
+            defaultDestination(config.downloadDir, only.key),
+            downloadReservationsRef.current,
+          ),
           entry: only,
         });
       }
@@ -748,7 +790,7 @@ export function App({
       return;
     }
 
-    if (prompt || confirm || presign || helpOpen) return;
+    if (prompt || confirm || presign || helpOpen || pickerOpen) return;
 
     if (listError) {
       if (input === "r") refresh();
@@ -787,12 +829,7 @@ export function App({
     } else if (input === "a") {
       setSelected(new Set(filtered.map((entry) => entry.key)));
     } else if (input === "u") {
-      setPrompt({
-        kind: "upload",
-        label: "上传本地路径（文件或目录）",
-        hint: "目录末尾带 / 时只上传内容 · Enter 确认 · Esc 取消",
-        initial: "",
-      });
+      setPickerOpen(true);
     } else if (input === "d") {
       startDownload(getTargets());
     } else if (input === "m") {
@@ -937,6 +974,17 @@ export function App({
         title="加载列表失败"
         message={listError.message}
         hints={listError.hints}
+      />
+    );
+  } else if (pickerOpen) {
+    body = (
+      <LocalPicker
+        initialDir={process.cwd()}
+        columns={columns}
+        height={Math.max(3, rows - 9)}
+        onCancel={() => setPickerOpen(false)}
+        onManualPath={openUploadPrompt}
+        onUpload={(paths) => void handlePickerUpload(paths)}
       />
     );
   } else {

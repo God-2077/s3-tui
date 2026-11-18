@@ -49,8 +49,10 @@ async function readBody(request: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-/** 一个只用于测试的最小 S3 兼容服务：list / put / get / copy / head / multipart / batch delete。 */
-export async function startMockS3(options: { bucketless?: boolean } = {}): Promise<MockS3> {
+/** 一个只用于测试的最小 S3 兼容服务：list / put / get（含 Range）/ copy / head / multipart / batch delete。 */
+export async function startMockS3(
+  options: { bucketless?: boolean; supportsRange?: boolean } = {},
+): Promise<MockS3> {
   const objects = new Map<string, Buffer>();
   const uploads = new Map<string, PartState>();
   let uploadCounter = 0;
@@ -235,12 +237,61 @@ export async function startMockS3(options: { bucketless?: boolean } = {}): Promi
           send(response, 404, "<Error><Code>NoSuchKey</Code><Message>missing</Message></Error>");
           return;
         }
-        response.writeHead(200, {
+
+        const rangeHeader = request.headers.range;
+        if (rangeHeader && options.supportsRange !== false && body.length > 0) {
+          const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
+          let start = -1;
+          let end = -1;
+          if (match) {
+            const rawStart = match[1] ?? "";
+            const rawEnd = match[2] ?? "";
+            if (rawStart === "" && rawEnd !== "") {
+              const suffix = Number.parseInt(rawEnd, 10);
+              if (Number.isInteger(suffix) && suffix > 0) {
+                start = Math.max(0, body.length - suffix);
+                end = body.length - 1;
+              }
+            } else if (rawStart !== "") {
+              const parsedStart = Number.parseInt(rawStart, 10);
+              const parsedEnd = rawEnd === "" ? body.length - 1 : Number.parseInt(rawEnd, 10);
+              if (Number.isInteger(parsedStart) && Number.isInteger(parsedEnd)) {
+                start = parsedStart;
+                end = Math.min(parsedEnd, body.length - 1);
+              }
+            }
+          }
+
+          if (start < 0 || end < start || start >= body.length) {
+            response.writeHead(416, {
+              "content-range": `bytes */${body.length}`,
+              "content-length": "0",
+            });
+            response.end();
+            return;
+          }
+
+          const slice = body.subarray(start, end + 1);
+          response.writeHead(206, {
+            "content-type": "application/octet-stream",
+            "content-length": String(slice.length),
+            "content-range": `bytes ${start}-${end}/${body.length}`,
+            "accept-ranges": "bytes",
+            etag: etagOf(body),
+            "last-modified": "Fri, 02 Jan 2026 03:04:05 GMT",
+          });
+          response.end(slice);
+          return;
+        }
+
+        const headers: Record<string, string> = {
           "content-type": "application/octet-stream",
           "content-length": String(body.length),
           etag: etagOf(body),
           "last-modified": "Fri, 02 Jan 2026 03:04:05 GMT",
-        });
+        };
+        if (options.supportsRange !== false) headers["accept-ranges"] = "bytes";
+        response.writeHead(200, headers);
         response.end(body);
         return;
       }
