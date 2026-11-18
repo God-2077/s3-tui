@@ -36,5 +36,37 @@
 
 ## Conventions
 
-- Commit messages: Conventional Commits prefix + Chinese description (e.g. `fix: 修复输入框光标不可见`, `feat: 新增 public 加速模式`).
 - `pnpm-workspace.yaml` is not a monorepo; it only configures pnpm `allowBuilds` for esbuild.
+
+## Git Commit Guidelines
+
+- Only create commits when explicitly requested by the user; do not modify or rebase pushed history.
+- Each commit should contain only one logical change and must not mix in unrelated formatting, refactoring, or dependency upgrades.
+- Commit messages must follow Conventional Commits:
+
+  `<type>(<scope>): <description>`
+
+  - `type` is required and lowercase: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `ci`
+  - `scope` is optional, lowercase, and indicates the area of impact, e.g. `auth`, `parser`, `api`
+  - `description` uses the English imperative mood, starts lowercase, has no period, and should preferably not exceed 50 characters
+- Leave a blank line between the description and the body; focus on explaining "why the change was made" and necessary context, and do not repeat "what was changed."
+- Use footers to link related issues, e.g. `Closes #123`.
+- Breaking changes must add `!` after the type/scope, or include `BREAKING CHANGE: <description>` in a footer.
+- Do not use vague commit messages such as `update`, `fix bug`, or `changes`.
+- If commitlint / Husky validation fails, fix the commit message; do not bypass it with `--no-verify`.
+
+Examples:
+
+```text
+feat(auth): add JWT-based login
+
+Replace session-based login to support distributed deployments.
+
+Closes #123
+```
+
+```text
+refactor(api)!: remove deprecated endpoint
+
+BREAKING CHANGE: `/v1/users` has been removed; use `/v2/users`.
+```
