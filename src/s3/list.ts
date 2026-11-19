@@ -105,6 +105,31 @@ export async function listAllObjects(
   return entries;
 }
 
+/** 递归统计某个前缀下所有对象的总字节数（包含所有子目录）。 */
+export async function sumPrefixSize(
+  client: S3Client,
+  bucket: string,
+  prefix: string,
+): Promise<number> {
+  let total = 0;
+  let token: string | undefined;
+  do {
+    const response = await client.send(
+      new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: prefix,
+        MaxKeys: 1000,
+        ...(token ? { ContinuationToken: token } : {}),
+      }),
+    );
+    for (const object of response.Contents ?? []) {
+      total += object.Size ?? 0;
+    }
+    token = response.IsTruncated ? response.NextContinuationToken : undefined;
+  } while (token);
+  return total;
+}
+
 /** 递归列出某个前缀下的所有对象 key（用于删除目录 / 批量操作）。 */
 export async function listAllKeys(
   client: S3Client,

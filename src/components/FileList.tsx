@@ -19,6 +19,7 @@ export interface FileListProps {
   loading: boolean;
   loadingMore: boolean;
   filter: string;
+  folderSizes?: ReadonlyMap<string, number | null>;
 }
 
 export function FileList({
@@ -30,6 +31,7 @@ export function FileList({
   loading,
   loadingMore,
   filter,
+  folderSizes,
 }: FileListProps) {
   const nameWidth = Math.max(12, columns - 2 - 2 - 2 - 10 - 1 - 11 - 1);
   const visibleHeight = Math.max(1, height);
@@ -64,7 +66,17 @@ export function FileList({
         const index = start + offset;
         const isCurrent = index === cursor;
         const isSelected = selected.has(entry.key);
-        const sizeText = entry.kind === "dir" ? "" : formatBytes(entry.size);
+        const folderSize = entry.kind === "dir" ? folderSizes?.get(entry.key) : undefined;
+        const sizeText =
+          entry.kind === "dir"
+            ? folderSizes
+              ? folderSize === undefined
+                ? "…"
+                : folderSize === null
+                  ? "—"
+                  : formatBytes(folderSize)
+              : ""
+            : formatBytes(entry.size);
         const dateText = entry.kind === "dir" ? "" : formatDateShort(entry.lastModified);
         const name = entry.kind === "dir" ? `${entry.name}/` : entry.name;
 

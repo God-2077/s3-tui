@@ -13,13 +13,14 @@ import {
   reserveDestination,
   uniqueDestination,
 } from "../s3/download.js";
-import { listAllKeys, listAllObjects, listPage, type S3Entry } from "../s3/list.js";
+import { listAllKeys, listAllObjects, listPage, sumPrefixSize, type S3Entry } from "../s3/list.js";
 import { createFolder, moveObjects, objectExists } from "../s3/manage.js";
 import { presignGet, presignPut } from "../s3/presign.js";
 import { uploadFile } from "../s3/upload.js";
 import { useTransfers, type TransferRequest } from "../hooks/useTransfers.js";
 import { copyToClipboard } from "../utils/clipboard.js";
 import { describeError, errorMessage } from "../utils/error.js";
+import { formatBytes } from "../utils/format.js";
 import {
   expandHome,
   folderKey,
@@ -104,6 +105,8 @@ export function App({
   const [helpOpen, setHelpOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [bucketSize, setBucketSize] = useState<number | null | undefined>(undefined);
+  const [folderSizes, setFolderSizes] = useState<ReadonlyMap<string, number | null>>(new Map());
 
   const seqRef = useRef(0);
   const presignSeqRef = useRef(0);
@@ -111,6 +114,8 @@ export function App({
   const enumeratingRef = useRef(false);
   const pendingQuitRef = useRef(false);
   const downloadReservationsRef = useRef(new Set<string>());
+  const folderSizeCacheRef = useRef(new Map<string, number | null>());
+  const folderSizePendingRef = useRef(new Set<string>());
 
   const transfers = useTransfers({
     uploadConcurrency: config.uploadConcurrency,
@@ -125,6 +130,63 @@ export function App({
     },
   });
 
+  const measureFolderSizes = useCallback(
+    async (dirs: S3Entry[], seq: number) => {
+      if (!config.showSizes) return;
+      const queue = dirs.filter(
+        (entry) =>
+          entry.kind === "dir" &&
+          !folderSizeCacheRef.current.has(entry.key) &&
+          !folderSizePendingRef.current.has(entry.key),
+      );
+      if (queue.length === 0) return;
+      for (const dir of queue) folderSizePendingRef.current.add(dir.key);
+
+      const worker = async (): Promise<void> => {
+        while (queue.length > 0) {
+          const dir = queue.shift();
+          if (!dir) return;
+          try {
+            const bytes = await sumPrefixSize(s3.main, config.bucket, dir.key);
+            if (seq !== seqRef.current) return;
+            folderSizeCacheRef.current.set(dir.key, bytes);
+          } catch (error) {
+            if (seq !== seqRef.current) return;
+            logger?.("统计文件夹大小失败", error);
+            folderSizeCacheRef.current.set(dir.key, null);
+          } finally {
+            if (seq === seqRef.current) {
+              folderSizePendingRef.current.delete(dir.key);
+              setFolderSizes(new Map(folderSizeCacheRef.current));
+            }
+          }
+        }
+      };
+
+      const workerCount = Math.min(config.concurrency, queue.length);
+      await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    },
+    [config.bucket, config.concurrency, config.showSizes, s3, logger],
+  );
+
+  useEffect(() => {
+    if (!config.showSizes) return;
+    setBucketSize(undefined);
+    let cancelled = false;
+    sumPrefixSize(s3.main, config.bucket, "")
+      .then((bytes) => {
+        if (!cancelled) setBucketSize(bytes);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        logger?.("统计桶大小失败", error);
+        setBucketSize(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [config.showSizes, config.bucket, refreshKey, s3]);
+
   useEffect(() => {
     let cancelled = false;
     const seq = (seqRef.current += 1);
@@ -133,6 +195,11 @@ export function App({
     setLoadingMore(false);
     setEntries([]);
     setNextToken(undefined);
+    if (config.showSizes) {
+      folderSizeCacheRef.current.clear();
+      folderSizePendingRef.current.clear();
+      setFolderSizes(new Map());
+    }
 
     listPage(s3.main, config.bucket, prefix)
       .then((page) => {
@@ -141,6 +208,7 @@ export function App({
         setNextToken(page.nextToken);
         setCursor(0);
         setSelected(new Set());
+        void measureFolderSizes(page.entries, seq);
       })
       .catch((error: unknown) => {
         if (cancelled || seq !== seqRef.current) return;
@@ -154,7 +222,7 @@ export function App({
     return () => {
       cancelled = true;
     };
-  }, [prefix, refreshKey, s3, config.bucket]);
+  }, [prefix, refreshKey, s3, config.bucket, config.showSizes, measureFolderSizes]);
 
   useEffect(() => {
     setFilter("");
@@ -183,13 +251,14 @@ export function App({
       const page = await listPage(s3.main, config.bucket, prefix, nextToken);
       setEntries((previous) => [...previous, ...page.entries]);
       setNextToken(page.nextToken);
+      void measureFolderSizes(page.entries, seqRef.current);
     } catch (error) {
       logger?.("加载更多失败", error);
       setNotice({ text: errorMessage(error), tone: "error" });
     } finally {
       setLoadingMore(false);
     }
-  }, [nextToken, loadingMore, s3, config.bucket, prefix]);
+  }, [nextToken, loadingMore, s3, config.bucket, prefix, measureFolderSizes]);
 
   useEffect(() => {
     if (filter.trim() || !nextToken || loading || loadingMore) return;
@@ -999,6 +1068,7 @@ export function App({
           loading={loading}
           loadingMore={loadingMore}
           filter={filter}
+          {...(config.showSizes ? { folderSizes } : {})}
         />
         <TransferPanel tasks={transfers.tasks} columns={columns} />
       </>
@@ -1008,6 +1078,9 @@ export function App({
   const accelerateLabel = config.accelerateHost
     ? ` · ⚡${config.accelerateHost.replace(/^https?:\/\//, "")}${s3.publicHost ? "（公开）" : ""}`
     : "";
+  const bucketSizeText =
+    bucketSize === undefined ? "…" : bucketSize === null ? "—" : formatBytes(bucketSize);
+  const bucketSizeLabel = config.showSizes ? ` · 桶 ${bucketSizeText}` : "";
 
   return (
     <Box flexDirection="column" width={columns}>
@@ -1030,6 +1103,7 @@ export function App({
           {nextToken ? " · 有更多" : ""}
           {selected.size > 0 ? ` · 已选 ${selected.size}` : ""}
           {filter.trim() ? ` · 过滤「${filter.trim()}」` : ""}
+          {bucketSizeLabel}
         </Text>
         {loading ? (
           <Text>

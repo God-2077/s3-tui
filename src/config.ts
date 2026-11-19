@@ -29,6 +29,7 @@ export interface AppConfig {
   multipartThreshold: number;
   downloadDir: string;
   presignExpires: number;
+  showSizes: boolean;
   debug: boolean;
   debugLog: string;
 }
@@ -108,6 +109,12 @@ export const CONFIG_FIELDS: ConfigFieldHelp[] = [
   },
   { name: "S3_DOWNLOAD_DIR", required: false, defaultValue: "./downloads", description: "下载落盘目录" },
   { name: "S3_PRESIGN_EXPIRES", required: false, defaultValue: "3600", description: "预签名默认有效期（秒，最大 7 天）" },
+  {
+    name: "S3_SHOW_SIZES",
+    required: false,
+    defaultValue: "false",
+    description: "显示桶总大小和文件夹大小（递归列出所有对象，桶很大时较慢）",
+  },
   { name: "S3_TUI_DEBUG", required: false, defaultValue: "false", description: "把调试日志写入日志文件" },
   { name: "S3_TUI_LOG", required: false, defaultValue: "./s3-tui.log", description: "调试日志路径" },
 ];
@@ -231,6 +238,7 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const partSizeMb = parseIntInRange("S3_PART_SIZE_MB", 8, 5, 5120);
   const thresholdMb = parseIntInRange("S3_MULTIPART_THRESHOLD_MB", 8, 0, 5 * 1024 * 1024);
   const presignExpires = parseIntInRange("S3_PRESIGN_EXPIRES", 3600, 1, 7 * 24 * 3600);
+  const showSizes = parseBool("S3_SHOW_SIZES", false);
 
   const partSize = partSizeMb * MIB;
   const downloadPartSize = downloadPartSizeMb * MIB;
@@ -265,6 +273,7 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     multipartThreshold,
     downloadDir,
     presignExpires,
+    showSizes,
     debug,
     debugLog,
   };

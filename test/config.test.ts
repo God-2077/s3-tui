@@ -22,8 +22,15 @@ test("最小配置可以解析，并应用默认值", () => {
   assert.equal(config.partSize, 8 * 1024 * 1024);
   assert.equal(config.multipartThreshold, 8 * 1024 * 1024);
   assert.equal(config.presignExpires, 3600);
+  assert.equal(config.showSizes, false);
   assert.equal(config.accelerateMode, "endpoint");
   assert.ok(config.downloadDir.endsWith("downloads"));
+});
+
+test("S3_SHOW_SIZES 控制大小统计", () => {
+  assert.equal(parseConfig(baseEnv).showSizes, false);
+  assert.equal(parseConfig({ ...baseEnv, S3_SHOW_SIZES: "true" }).showSizes, true);
+  assert.equal(parseConfig({ ...baseEnv, S3_SHOW_SIZES: "off" }).showSizes, false);
 });
 
 test("兼容 AWS_ 前缀凭证", () => {
